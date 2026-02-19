@@ -1,7 +1,6 @@
 import json
 import math
 import sqlite3
-import sys
 import tempfile
 from bisect import bisect_left
 from collections import OrderedDict
@@ -61,8 +60,8 @@ TIME_COLUMN = "time@timestamp"
 PLOTLY_AVAILABLE = go is not None and PlotlyJSONEncoder is not None
 MAX_RENDER_POINTS_PER_CHANNEL = 3500
 CACHE_MAX_ITEMS = 16
-HEALTH_CHECK_MAX_ATTEMPTS = 12
-HEALTH_CHECK_RETRY_MS = 180
+HEALTH_CHECK_MAX_ATTEMPTS = 40
+HEALTH_CHECK_RETRY_MS = 250
 
 Y_CHANNELS = [
     ("data_format_0", "Объект мойки (INT16)"),
@@ -318,7 +317,6 @@ class PlotlyChartView(QWidget):
         self._is_health_check_pending = False
         self._health_check_attempt = 0
         self._fallback_to_embedded_js = False
-        self._prefer_embedded_js = bool(getattr(sys, "frozen", False) and sys.platform.startswith("win"))
         self._react_request_id = 0
         self.set_placeholder("Откройте базу данных и постройте график.")
 
@@ -395,9 +393,8 @@ class PlotlyChartView(QWidget):
         if self._last_figure is None:
             return
 
-        use_embedded_js = embed_js or self._prefer_embedded_js
         include_plotlyjs: str | bool = True
-        if not use_embedded_js:
+        if not embed_js:
             local_js_url = self._resolve_local_plotly_js_url()
             if local_js_url:
                 include_plotlyjs = local_js_url
@@ -474,7 +471,7 @@ class PlotlyChartView(QWidget):
             self.render_error.emit("Не удалось загрузить HTML-график в Qt WebEngine.")
             return
 
-        self._run_health_check()
+        QTimer.singleShot(120, self._run_health_check)
 
     def _run_health_check(self) -> None:
         if not self._is_health_check_pending:

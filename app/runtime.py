@@ -36,6 +36,7 @@ def configure_frozen_qt_runtime() -> None:
     if sys.platform.startswith("win"):
         # Software OpenGL + GPU-off flags improve compatibility on older Windows setups.
         os.environ.setdefault("QT_OPENGL", "software")
+        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
         os.environ.setdefault(
             "QTWEBENGINE_CHROMIUM_FLAGS",
             "--disable-gpu --disable-gpu-compositing",
