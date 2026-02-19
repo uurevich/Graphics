@@ -1,5 +1,9 @@
 import sys
 
+from app.runtime import configure_frozen_qt_runtime
+
+configure_frozen_qt_runtime()
+
 from PySide6.QtWidgets import QApplication
 
 from app.ui.main_window import MainWindow

@@ -31,6 +31,11 @@ if (Test-Path "GraphicsApp.spec") {
     --onedir `
     --name "GraphicsApp" `
     --collect-data plotly `
+    --collect-submodules PySide6.QtWebEngineCore `
+    --collect-submodules PySide6.QtWebEngineWidgets `
+    --collect-submodules PySide6.QtWebChannel `
+    --collect-binaries PySide6 `
+    --collect-data PySide6 `
     "app/main.py"
 
 Write-Host ""

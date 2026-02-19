@@ -1,6 +1,7 @@
 import json
 import math
 import sqlite3
+import sys
 import tempfile
 from bisect import bisect_left
 from collections import OrderedDict
@@ -8,9 +9,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from PySide6.QtCore import QDateTime, QObject, QSignalBlocker, QThread, QUrl, Qt, Signal, Slot
+from PySide6.QtCore import (
+    QDateTime,
+    QObject,
+    QSignalBlocker,
+    QThread,
+    QTimer,
+    QUrl,
+    Qt,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QAction
 from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -49,6 +61,8 @@ TIME_COLUMN = "time@timestamp"
 PLOTLY_AVAILABLE = go is not None and PlotlyJSONEncoder is not None
 MAX_RENDER_POINTS_PER_CHANNEL = 3500
 CACHE_MAX_ITEMS = 16
+HEALTH_CHECK_MAX_ATTEMPTS = 12
+HEALTH_CHECK_RETRY_MS = 180
 
 Y_CHANNELS = [
     ("data_format_0", "Объект мойки (INT16)"),
@@ -279,6 +293,16 @@ class PlotlyChartView(QWidget):
         layout.setSpacing(0)
 
         self._web_view = QWebEngineView(self)
+        settings = self._web_view.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        settings.setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
+            True,
+        )
+        settings.setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+            True,
+        )
         layout.addWidget(self._web_view, 1)
 
         self._bridge = PlotlyBridge(self)
@@ -292,7 +316,9 @@ class PlotlyChartView(QWidget):
         self._html_file_path: Optional[Path] = None
         self._last_figure = None
         self._is_health_check_pending = False
+        self._health_check_attempt = 0
         self._fallback_to_embedded_js = False
+        self._prefer_embedded_js = bool(getattr(sys, "frozen", False) and sys.platform.startswith("win"))
         self._react_request_id = 0
         self.set_placeholder("Откройте базу данных и постройте график.")
 
@@ -303,6 +329,7 @@ class PlotlyChartView(QWidget):
         self._has_data = False
         self._last_figure = None
         self._is_health_check_pending = False
+        self._health_check_attempt = 0
         self._fallback_to_embedded_js = False
         self._react_request_id = 0
         html = f"""
@@ -367,8 +394,10 @@ class PlotlyChartView(QWidget):
     def _load_figure(self, embed_js: bool) -> None:
         if self._last_figure is None:
             return
+
+        use_embedded_js = embed_js or self._prefer_embedded_js
         include_plotlyjs: str | bool = True
-        if not embed_js:
+        if not use_embedded_js:
             local_js_url = self._resolve_local_plotly_js_url()
             if local_js_url:
                 include_plotlyjs = local_js_url
@@ -381,6 +410,7 @@ class PlotlyChartView(QWidget):
         html = self._inject_bridge_script(html)
         self._write_html_to_temp_file(html)
         self._is_health_check_pending = True
+        self._health_check_attempt = 0
         self._has_data = False
         self._web_view.load(QUrl.fromLocalFile(str(self._html_file_path)))
 
@@ -444,6 +474,12 @@ class PlotlyChartView(QWidget):
             self.render_error.emit("Не удалось загрузить HTML-график в Qt WebEngine.")
             return
 
+        self._run_health_check()
+
+    def _run_health_check(self) -> None:
+        if not self._is_health_check_pending:
+            return
+
         script = """
         (function() {
           var plot = document.querySelector('.plotly-graph-div');
@@ -454,7 +490,8 @@ class PlotlyChartView(QWidget):
           return {
             hasPlotly: typeof window.Plotly !== 'undefined',
             hasPlot: !!plot,
-            traceCount: traceCount
+            traceCount: traceCount,
+            lastError: window.__plotlyLastError || null
           };
         })();
         """
@@ -464,6 +501,7 @@ class PlotlyChartView(QWidget):
         has_plotly = False
         has_plot = False
         trace_count = 0
+        last_error = ""
 
         if isinstance(payload, dict):
             has_plotly = bool(payload.get("hasPlotly"))
@@ -472,18 +510,30 @@ class PlotlyChartView(QWidget):
                 trace_count = int(payload.get("traceCount", 0))
             except (TypeError, ValueError):
                 trace_count = 0
+            last_error = str(payload.get("lastError") or "")
 
         if (not has_plotly or not has_plot) and not self._fallback_to_embedded_js:
             self._fallback_to_embedded_js = True
             self._load_figure(embed_js=True)
             return
 
+        if has_plotly and has_plot and trace_count > 0:
+            self._is_health_check_pending = False
+            self._has_data = True
+            return
+
+        if self._health_check_attempt < HEALTH_CHECK_MAX_ATTEMPTS:
+            self._health_check_attempt += 1
+            QTimer.singleShot(HEALTH_CHECK_RETRY_MS, self._run_health_check)
+            return
+
         self._is_health_check_pending = False
-        self._has_data = has_plotly and has_plot and trace_count > 0
-        if not self._has_data:
-            self.render_error.emit(
-                "График не инициализировался. Проверьте установленный Qt WebEngine и Plotly."
-            )
+        self._has_data = False
+        detail = f" Детали: {last_error}" if last_error else ""
+        self.render_error.emit(
+            "График не инициализировался. Проверьте установленный Qt WebEngine и Plotly."
+            + detail
+        )
 
     @staticmethod
     def _plotly_config() -> dict[str, object]:
@@ -509,6 +559,16 @@ class PlotlyChartView(QWidget):
         <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
         <script>
         (function() {
+          window.__plotlyLastError = null;
+          window.addEventListener('error', function(event) {
+            var message = event && event.message ? event.message : 'javascript error';
+            window.__plotlyLastError = message;
+          });
+          window.addEventListener('unhandledrejection', function(event) {
+            var reason = event && event.reason ? String(event.reason) : 'promise rejection';
+            window.__plotlyLastError = reason;
+          });
+
           function normalizeXToSeconds(xValue, axisType) {
             if (xValue === undefined || xValue === null) return null;
             if (xValue instanceof Date) {

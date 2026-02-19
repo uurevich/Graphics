@@ -27,7 +27,7 @@ jobs:
 
       - name: Build EXE
         run: |
-          pyinstaller --noconfirm --clean --windowed --onedir --name GraphicsApp --collect-data plotly app/main.py
+          pyinstaller --noconfirm --clean --windowed --onedir --name GraphicsApp --collect-data plotly --collect-submodules PySide6.QtWebEngineCore --collect-submodules PySide6.QtWebEngineWidgets --collect-submodules PySide6.QtWebChannel --collect-binaries PySide6 --collect-data PySide6 app/main.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
