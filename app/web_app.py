@@ -196,6 +196,12 @@ def _build_day_options(min_ts: float, max_ts: float) -> list[dict[str, str]]:
     return options
 
 
+def _build_meta_line(min_ts: float, max_ts: float, channel_count: int) -> str:
+    start_text = datetime.fromtimestamp(min_ts).strftime("%d.%m.%Y %H:%M:%S")
+    end_text = datetime.fromtimestamp(max_ts).strftime("%d.%m.%Y %H:%M:%S")
+    return f"Диапазон: {start_text} - {end_text} | Каналов: {channel_count}"
+
+
 def _cleanup_temp_db(path: Optional[str]) -> None:
     if not path:
         return
@@ -453,27 +459,39 @@ app.layout = html.Div(
     children=[
         dcc.Store(id="db-store"),
         dcc.Store(id="traces-store"),
-        html.Div(
+        html.Aside(
             className="left-panel",
             children=[
-                html.H1("Построение графиков", className="app-title"),
-                html.P(
-                    "Загрузите SQLite-файл и постройте график в браузере.",
-                    className="subtitle",
+                html.Div(
+                    className="panel-head",
+                    children=[
+                        html.H1("Построение графиков", className="app-title"),
+                        html.P(
+                            "Работа с SQLite-файлами в браузере. Все настройки слева, график справа.",
+                            className="subtitle",
+                        ),
+                        html.Span("Веб-интерфейс", className="pill"),
+                    ],
                 ),
-                dcc.Upload(
-                    id="db-upload",
-                    className="upload-area",
-                    children=html.Div(
-                        [
-                            html.Span("Перетащите .db сюда или "),
-                            html.Span("выберите файл", className="linkish"),
-                        ]
-                    ),
-                    multiple=False,
+                html.Div(
+                    className="panel-card",
+                    children=[
+                        dcc.Upload(
+                            id="db-upload",
+                            className="upload-area",
+                            children=html.Div(
+                                [
+                                    html.Span("Перетащите .db сюда или "),
+                                    html.Span("выберите файл", className="linkish"),
+                                ]
+                            ),
+                            multiple=False,
+                        ),
+                        html.Div("Файл не выбран", id="db-info", className="db-info"),
+                        html.Div("Диапазон: — | Каналов: —", id="meta-line", className="meta-line"),
+                    ],
                 ),
-                html.Div("Файл не выбран", id="db-info", className="db-info"),
-                html.Div("Диапазон времени", className="section-title"),
+                html.Div("Параметры построения", className="section-title"),
                 html.Label("Начало", className="input-label"),
                 dcc.Input(id="start-dt", type="datetime-local", className="text-input"),
                 html.Label("Конец", className="input-label"),
@@ -540,21 +558,38 @@ app.layout = html.Div(
                     "Сохранение картинки: кнопка камеры на панели графика.",
                     className="hint",
                 ),
-                html.Div(id="status-line", className="status-line"),
-                html.Div("Значения по клику", className="section-title"),
-                html.Div("Время X: —", id="clicked-time", className="clicked-time"),
-                html.Ul(id="clicked-values", className="clicked-values"),
             ],
         ),
-        html.Div(
+        html.Main(
             className="right-panel",
             children=[
-                dcc.Graph(
-                    id="main-chart",
-                    figure=_build_placeholder_figure("Откройте файл базы данных и постройте график."),
-                    config=_plotly_config(),
-                    className="main-chart",
-                )
+                html.Div(
+                    className="right-toolbar",
+                    children=[
+                        html.Div("График параметров", className="toolbar-title"),
+                        html.Div(id="status-line", className="status-line"),
+                    ],
+                ),
+                dcc.Loading(
+                    type="dot",
+                    className="graph-loading",
+                    children=[
+                        dcc.Graph(
+                            id="main-chart",
+                            figure=_build_placeholder_figure("Откройте файл базы данных и постройте график."),
+                            config=_plotly_config(),
+                            className="main-chart",
+                        )
+                    ],
+                ),
+                html.Div(
+                    className="inspector-card",
+                    children=[
+                        html.Div("Значения по клику", className="inspector-title"),
+                        html.Div("Время X: —", id="clicked-time", className="clicked-time"),
+                        html.Ul(id="clicked-values", className="clicked-values"),
+                    ],
+                ),
             ],
         ),
     ],
@@ -564,6 +599,7 @@ app.layout = html.Div(
 @callback(
     Output("db-store", "data"),
     Output("db-info", "children"),
+    Output("meta-line", "children"),
     Output("channels-checklist", "options"),
     Output("channels-checklist", "value"),
     Output("start-dt", "value"),
@@ -638,6 +674,7 @@ def load_database(
         return (
             payload,
             f"Файл: {payload['filename']}",
+            _build_meta_line(min_ts=min_ts, max_ts=max_ts, channel_count=len(available_channels)),
             options,
             default_selection,
             start_value,
@@ -665,10 +702,12 @@ def load_database(
                 no_update,
                 no_update,
                 no_update,
+                no_update,
             )
         return (
             None,
             f"Ошибка загрузки: {error}",
+            "Диапазон: — | Каналов: —",
             [],
             [],
             None,
@@ -686,12 +725,14 @@ def load_database(
     Output("channels-checklist", "value"),
     Input("select-all-btn", "n_clicks"),
     Input("clear-btn", "n_clicks"),
+    Input("build-all-btn", "n_clicks"),
     State("channels-checklist", "options"),
     prevent_initial_call=True,
 )
 def update_channel_selection(
     _select_all_clicks: Optional[int],
     _clear_clicks: Optional[int],
+    _build_all_clicks: Optional[int],
     channel_options: Optional[list[dict[str, str]]],
 ):
     available_options = channel_options or []
@@ -699,7 +740,7 @@ def update_channel_selection(
         return []
 
     trigger = ctx.triggered_id
-    if trigger == "select-all-btn":
+    if trigger in {"select-all-btn", "build-all-btn"}:
         return [option["value"] for option in available_options]
     if trigger == "clear-btn":
         return []
@@ -752,11 +793,11 @@ def apply_time_shortcuts(
     Input("build-selected-btn", "n_clicks"),
     Input("build-all-btn", "n_clicks"),
     Input("show-y-axes", "value"),
-    State("channels-checklist", "value"),
+    Input("channels-checklist", "value"),
+    Input("start-dt", "value"),
+    Input("end-dt", "value"),
+    Input("limit-input", "value"),
     State("channels-checklist", "options"),
-    State("start-dt", "value"),
-    State("end-dt", "value"),
-    State("limit-input", "value"),
 )
 def build_chart(
     db_store: Optional[dict[str, Any]],
@@ -764,10 +805,10 @@ def build_chart(
     _all_clicks: Optional[int],
     show_y_axes_values: list[str],
     selected_values: Optional[list[str]],
-    channel_options: Optional[list[dict[str, str]]],
     start_value: Optional[str],
     end_value: Optional[str],
     limit_value: Optional[float],
+    channel_options: Optional[list[dict[str, str]]],
 ):
     if not isinstance(db_store, dict):
         return (
@@ -799,25 +840,25 @@ def build_chart(
 
     start_ts = _input_value_to_timestamp(start_value)
     end_ts = _input_value_to_timestamp(end_value)
-    if start_ts is None or end_ts is None:
-        return (
-            _build_placeholder_figure("Некорректный диапазон времени."),
-            [],
-            "Заполните корректные значения начала и конца.",
-        )
+    min_ts = float(db_store["min_ts"])
+    max_ts = float(db_store["max_ts"])
+    if start_ts is None:
+        start_ts = min_ts
+    if end_ts is None:
+        end_ts = max_ts
     if start_ts > end_ts:
         return (
             _build_placeholder_figure("Начало должно быть меньше или равно концу."),
             [],
             "Ошибка: время начала больше времени конца.",
         )
-
-    min_ts = float(db_store["min_ts"])
-    max_ts = float(db_store["max_ts"])
     start_ts = max(start_ts, min_ts)
     end_ts = min(end_ts, max_ts)
 
-    limit = int(limit_value or 4511)
+    try:
+        limit = int(float(limit_value)) if limit_value is not None else 4511
+    except (TypeError, ValueError):
+        limit = 4511
     limit = max(10, min(limit, 1_000_000))
 
     label_map: dict[str, str] = dict(db_store.get("channel_labels") or _db_channel_labels())
@@ -859,7 +900,7 @@ def build_chart(
         end_ts=end_ts,
         show_y_axes=show_y_axes,
     )
-    status = f"Построено каналов: {len(traces_payload)} | Точек: {points_total}"
+    status = f"Построено каналов: {len(traces_payload)} | Точек: {points_total} | Лимит: {limit}"
     return figure, traces_payload, status
 
 
@@ -871,7 +912,7 @@ def build_chart(
 )
 def update_clicked_values(
     click_data: Optional[dict[str, Any]],
-    traces_payload: list[dict[str, Any]],
+    traces_payload: Optional[list[dict[str, Any]]],
 ):
     trigger = ctx.triggered_id
     if trigger == "traces-store" or not click_data or not traces_payload:
