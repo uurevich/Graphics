@@ -143,6 +143,12 @@ body {
   font-weight: 600;
 }
 
+.mini-label {
+  color: #6b7b8f;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .section-title {
   margin-top: 6px;
   color: #3a5270;

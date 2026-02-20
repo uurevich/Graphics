@@ -233,6 +233,25 @@ def _decode_upload_to_temp_db(contents: str) -> str:
         return temp_file.name
 
 
+def _validate_input_path(path_text: str) -> str:
+    raw = (path_text or "").strip().strip("\"'")
+    if not raw:
+        raise ValueError("Введите путь к файлу базы данных.")
+    candidate = Path(raw).expanduser()
+    if not candidate.exists():
+        raise ValueError("Файл по указанному пути не найден.")
+    if not candidate.is_file():
+        raise ValueError("Указанный путь не является файлом.")
+    return str(candidate.resolve())
+
+
+def _current_triggered_id() -> Optional[str]:
+    try:
+        return ctx.triggered_id
+    except Exception:
+        return None
+
+
 def _build_placeholder_figure(title: str) -> go.Figure:
     figure = go.Figure()
     figure.update_layout(
@@ -493,6 +512,20 @@ app.layout = html.Div(
                                 ]
                             ),
                             multiple=False,
+                            accept=".db,.sqlite,.sqlite3,application/octet-stream",
+                        ),
+                        html.Div("или откройте файл по пути", className="mini-label"),
+                        html.Div(
+                            className="row",
+                            children=[
+                                dcc.Input(
+                                    id="db-path-input",
+                                    type="text",
+                                    className="text-input grow",
+                                    placeholder="Например: C:\\data\\20250506_Canal#1.db",
+                                ),
+                                html.Button("Открыть", id="open-path-btn", className="ghost-btn"),
+                            ],
                         ),
                         html.Div("Файл не выбран", id="db-info", className="db-info"),
                         html.Div("Диапазон: — | Каналов: —", id="meta-line", className="meta-line"),
@@ -618,26 +651,40 @@ app.layout = html.Div(
     Output("day-dropdown", "options"),
     Output("day-dropdown", "value"),
     Input("db-upload", "contents"),
+    Input("open-path-btn", "n_clicks"),
     State("db-upload", "filename"),
+    State("db-path-input", "value"),
     State("db-store", "data"),
     prevent_initial_call=True,
 )
 def load_database(
     contents: Optional[str],
+    _open_path_clicks: Optional[int],
     filename: Optional[str],
+    path_input: Optional[str],
     db_store: Optional[dict[str, Any]],
 ):
-    if not contents:
-        raise PreventUpdate
-
     previous_path = None
     if isinstance(db_store, dict):
         previous_path = db_store.get("db_path")
 
     temp_db_path: Optional[str] = None
+    db_path_to_use: Optional[str] = None
+    display_name: Optional[str] = None
     try:
-        temp_db_path = _decode_upload_to_temp_db(contents)
-        service = SQLiteService(temp_db_path)
+        triggered = _current_triggered_id()
+        if triggered == "open-path-btn":
+            db_path_to_use = _validate_input_path(path_input or "")
+            display_name = db_path_to_use
+        else:
+            if not contents:
+                raise PreventUpdate
+            temp_db_path = _decode_upload_to_temp_db(contents)
+            db_path_to_use = temp_db_path
+            display_name = filename or Path(temp_db_path).name
+
+        assert db_path_to_use is not None
+        service = SQLiteService(db_path_to_use)
 
         if not service.table_exists(DATA_TABLE):
             raise ValueError(f"Таблица '{DATA_TABLE}' не найдена.")
@@ -671,8 +718,8 @@ def load_database(
         day_default = day_options[0]["value"] if day_options else None
 
         payload = {
-            "db_path": temp_db_path,
-            "filename": filename or Path(temp_db_path).name,
+            "db_path": db_path_to_use,
+            "filename": display_name or Path(db_path_to_use).name,
             "min_ts": min_ts,
             "max_ts": max_ts,
             "channel_labels": {column: label for column, label in available_channels},
@@ -746,7 +793,7 @@ def update_channel_selection(
     if not available_options:
         return []
 
-    trigger = ctx.triggered_id
+    trigger = _current_triggered_id()
     if trigger in {"select-all-btn", "build-all-btn"}:
         return [option["value"] for option in available_options]
     if trigger == "clear-btn":
@@ -774,7 +821,7 @@ def apply_time_shortcuts(
 
     min_ts = float(db_store["min_ts"])
     max_ts = float(db_store["max_ts"])
-    trigger = ctx.triggered_id
+    trigger = _current_triggered_id()
 
     if trigger == "full-range-btn":
         return _timestamp_to_input_value(min_ts), _timestamp_to_input_value(max_ts)
@@ -832,7 +879,7 @@ def build_chart(
             "Временный файл базы данных недоступен.",
         )
 
-    trigger = ctx.triggered_id
+    trigger = _current_triggered_id()
     available_options = channel_options or []
     selected_columns = list(selected_values or [])
     if trigger == "build-all-btn":
@@ -921,7 +968,7 @@ def update_clicked_values(
     click_data: Optional[dict[str, Any]],
     traces_payload: Optional[list[dict[str, Any]]],
 ):
-    trigger = ctx.triggered_id
+    trigger = _current_triggered_id()
     if trigger == "traces-store" or not click_data or not traces_payload:
         return "Время X: —", []
 
