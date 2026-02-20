@@ -2,6 +2,7 @@ import base64
 import math
 import os
 import sqlite3
+import sys
 import tempfile
 import webbrowser
 from bisect import bisect_left
@@ -19,12 +20,15 @@ except ImportError as error:  # pragma: no cover - runtime dependency guard
         "Не найден пакет 'dash'. Установите зависимости: pip install -r requirements.txt"
     ) from error
 
-from app.data.sqlite_service import SQLiteService
+from app.data.sqlite_service import SQLiteService, quote_identifier
 
 
 DATA_TABLE = "data"
 TIME_COLUMN = "time@timestamp"
 MAX_RENDER_POINTS_PER_CHANNEL = 3500
+MAX_TOTAL_RENDER_POINTS = 220_000
+MAX_UPLOAD_FILES = 32
+INITIAL_X_WINDOW_SECONDS = 6 * 60 * 60
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ASSETS_DIR = PROJECT_ROOT / "assets"
 
@@ -174,6 +178,34 @@ def _parse_plotly_x_to_timestamp(x_value: str) -> Optional[float]:
     return None
 
 
+def _extract_click_timestamp(
+    click_data: dict[str, Any],
+    traces_payload: list[dict[str, Any]],
+) -> Optional[float]:
+    points = click_data.get("points") or []
+    if not points:
+        return None
+
+    point = points[0] or {}
+    x_raw = point.get("x")
+    if x_raw is not None:
+        parsed = _parse_plotly_x_to_timestamp(str(x_raw))
+        if parsed is not None:
+            return parsed
+
+    curve_number = point.get("curveNumber")
+    point_number = point.get("pointNumber", point.get("pointIndex"))
+    if not isinstance(curve_number, int) or not isinstance(point_number, int):
+        return None
+    if curve_number < 0 or curve_number >= len(traces_payload):
+        return None
+
+    ts_values = traces_payload[curve_number].get("ts_values") or []
+    if point_number < 0 or point_number >= len(ts_values):
+        return None
+    return _to_float_or_none(ts_values[point_number])
+
+
 def _timestamp_to_input_value(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -198,10 +230,107 @@ def _build_day_options(min_ts: float, max_ts: float) -> list[dict[str, str]]:
     return options
 
 
-def _build_meta_line(min_ts: float, max_ts: float, channel_count: int) -> str:
+def _build_meta_line(min_ts: float, max_ts: float, channel_count: int, file_count: int) -> str:
     start_text = datetime.fromtimestamp(min_ts).strftime("%d.%m.%Y %H:%M:%S")
     end_text = datetime.fromtimestamp(max_ts).strftime("%d.%m.%Y %H:%M:%S")
-    return f"Диапазон: {start_text} - {end_text} | Каналов: {channel_count}"
+    return f"Файлов: {file_count} | Диапазон: {start_text} - {end_text} | Каналов: {channel_count}"
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _extract_temp_paths_from_store(db_store: Optional[dict[str, Any]]) -> list[str]:
+    if not isinstance(db_store, dict):
+        return []
+
+    paths: list[str] = []
+    db_path = db_store.get("db_path")
+    if isinstance(db_path, str) and db_path:
+        paths.append(db_path)
+
+    raw_sources = db_store.get("sources")
+    if isinstance(raw_sources, list):
+        for source in raw_sources:
+            if not isinstance(source, dict):
+                continue
+            source_path = source.get("db_path")
+            if isinstance(source_path, str) and source_path:
+                paths.append(source_path)
+
+    return paths
+
+
+def _build_available_channels(sources: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    if not sources:
+        return []
+
+    common_columns: Optional[set[str]] = None
+    for source in sources:
+        labels_map = source.get("channel_labels") or {}
+        source_columns = {str(column) for column in labels_map.keys()}
+        common_columns = source_columns if common_columns is None else common_columns & source_columns
+
+    if not common_columns:
+        return []
+    return [(column, label) for column, label in Y_CHANNELS if column in common_columns]
+
+
+def _build_db_info_line(
+    loaded_sources: list[dict[str, Any]],
+    skipped_count: int,
+    was_limited: bool,
+) -> str:
+    if not loaded_sources:
+        return "Файлы не выбраны"
+
+    names = [str(source.get("filename", "без имени")) for source in loaded_sources]
+    preview = ", ".join(names[:3])
+    if len(names) > 3:
+        preview += ", ..."
+    parts = [f"Файлов: {len(loaded_sources)}", preview]
+    if was_limited:
+        parts.append(f"взяты первые {MAX_UPLOAD_FILES}")
+    if skipped_count > 0:
+        parts.append(f"пропущено: {skipped_count}")
+    return " | ".join(parts)
+
+
+def _inspect_uploaded_source(db_path: str, display_name: str) -> dict[str, Any]:
+    service = SQLiteService(db_path)
+    if not service.table_exists(DATA_TABLE):
+        raise ValueError(f"Таблица '{DATA_TABLE}' не найдена.")
+
+    columns = service.list_columns(DATA_TABLE)
+    column_names = {column.name for column in columns}
+    if TIME_COLUMN not in column_names:
+        raise ValueError(f"В таблице '{DATA_TABLE}' нет столбца '{TIME_COLUMN}'.")
+
+    available_channels = [(column, label) for column, label in Y_CHANNELS if column in column_names]
+    if not available_channels:
+        raise ValueError("В таблице не найдены поддерживаемые каналы Y.")
+
+    bounds = service.fetch_time_bounds(DATA_TABLE, TIME_COLUMN)
+    if not bounds:
+        raise ValueError("Не удалось определить временной диапазон в таблице данных.")
+    min_ts, max_ts = bounds
+
+    try:
+        service.ensure_time_index(DATA_TABLE, TIME_COLUMN)
+    except sqlite3.Error:
+        pass
+
+    return {
+        "db_path": db_path,
+        "filename": display_name or Path(db_path).name,
+        "min_ts": min_ts,
+        "max_ts": max_ts,
+        "channel_labels": {column: label for column, label in available_channels},
+    }
 
 
 def _cleanup_temp_db(path: Optional[str]) -> None:
@@ -233,16 +362,68 @@ def _decode_upload_to_temp_db(contents: str) -> str:
         return temp_file.name
 
 
-def _validate_input_path(path_text: str) -> str:
-    raw = (path_text or "").strip().strip("\"'")
-    if not raw:
-        raise ValueError("Введите путь к файлу базы данных.")
-    candidate = Path(raw).expanduser()
-    if not candidate.exists():
-        raise ValueError("Файл по указанному пути не найден.")
-    if not candidate.is_file():
-        raise ValueError("Указанный путь не является файлом.")
-    return str(candidate.resolve())
+def _merge_sources_into_temp_db(
+    sources: list[dict[str, Any]],
+    common_columns: list[str],
+) -> tuple[str, int]:
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        suffix=".db",
+        prefix="dash_chart_merged_",
+        delete=False,
+    ) as temp_file:
+        merged_path = temp_file.name
+
+    q_table = quote_identifier(DATA_TABLE)
+    q_time = quote_identifier(TIME_COLUMN)
+    quoted_columns = [quote_identifier(column) for column in common_columns]
+    create_columns = [f"{q_time} REAL"] + [f"{quoted} REAL" for quoted in quoted_columns]
+    create_sql = f"CREATE TABLE {q_table} ({', '.join(create_columns)})"
+
+    insert_columns = [q_time] + quoted_columns
+    placeholders = ", ".join(["?"] * len(insert_columns))
+    insert_sql = f"INSERT INTO {q_table} ({', '.join(insert_columns)}) VALUES ({placeholders})"
+
+    rows_written = 0
+    connection = sqlite3.connect(merged_path)
+    try:
+        connection.execute(create_sql)
+        for source in sources:
+            source_path = str(source["db_path"])
+            source_connection = sqlite3.connect(source_path)
+            try:
+                select_sql = (
+                    f"SELECT {q_time}, {', '.join(quoted_columns)} "
+                    f"FROM {q_table} "
+                    f"WHERE {q_time} IS NOT NULL "
+                    f"ORDER BY {q_time}"
+                )
+                cursor = source_connection.execute(select_sql)
+                while True:
+                    batch = cursor.fetchmany(5000)
+                    if not batch:
+                        break
+                    connection.executemany(insert_sql, batch)
+                    rows_written += len(batch)
+            finally:
+                source_connection.close()
+
+        index_sql = f"CREATE INDEX IF NOT EXISTS idx_data_time_timestamp_ts ON {q_table} ({q_time})"
+        connection.execute(index_sql)
+        connection.commit()
+    except Exception:
+        connection.close()
+        _cleanup_temp_db(merged_path)
+        raise
+
+    connection.close()
+    return merged_path, rows_written
+
+
+def _compute_downsample_target(limit: int, source_count: int, channel_count: int) -> int:
+    trace_count = max(1, source_count * channel_count)
+    total_budget_per_trace = max(250, MAX_TOTAL_RENDER_POINTS // trace_count)
+    return max(250, min(limit, MAX_RENDER_POINTS_PER_CHANNEL, total_budget_per_trace))
 
 
 def _current_triggered_id() -> Optional[str]:
@@ -289,6 +470,7 @@ def _build_traces_payload(
     limit: int,
     start_ts: float,
     end_ts: float,
+    downsample_target: int,
 ) -> tuple[list[dict[str, object]], int]:
     channel_columns = [column for column, _ in selected_channels]
     rows = service.fetch_multi_series_rows(
@@ -302,7 +484,7 @@ def _build_traces_payload(
     buffers: dict[str, dict[str, object]] = {}
     for index, (column_name, label) in enumerate(selected_channels):
         buffers[column_name] = {
-            "name": label,
+            "channel_name": _strip_type_suffix(label),
             "color": SERIES_COLORS[index % len(SERIES_COLORS)],
             "ts_values": [],
             "y_values": [],
@@ -324,11 +506,10 @@ def _build_traces_payload(
             buffer["min_y"] = min(buffer["min_y"], y_value)  # type: ignore[index]
             buffer["max_y"] = max(buffer["max_y"], y_value)  # type: ignore[index]
 
-    downsample_target = max(500, min(limit, MAX_RENDER_POINTS_PER_CHANNEL))
     traces_payload: list[dict[str, object]] = []
     points_total = 0
 
-    for column_name, label in selected_channels:
+    for column_name, _ in selected_channels:
         buffer = buffers[column_name]
         ts_values: list[float] = buffer["ts_values"]  # type: ignore[assignment]
         y_values: list[float] = buffer["y_values"]    # type: ignore[assignment]
@@ -348,7 +529,7 @@ def _build_traces_payload(
         traces_payload.append(
             {
                 "column": column_name,
-                "name": label,
+                "name": buffer["channel_name"],
                 "color": buffer["color"],
                 "ts_values": sampled_ts,
                 "y_values": sampled_y,
@@ -363,73 +544,113 @@ def _build_traces_payload(
 
 def _build_plotly_figure(
     traces_payload: list[dict[str, object]],
+    selected_columns: list[str],
+    channel_label_map: dict[str, str],
     start_ts: float,
     end_ts: float,
     show_y_axes: bool,
+    file_count: int,
 ) -> go.Figure:
     figure = go.Figure()
 
-    for index, payload in enumerate(traces_payload):
-        yaxis_name = "y" if index == 0 else f"y{index + 1}"
+    active_columns = [column for column in selected_columns if any(p.get("column") == column for p in traces_payload)]
+    if not active_columns:
+        active_columns = []
+        for payload in traces_payload:
+            column = str(payload.get("column", ""))
+            if column and column not in active_columns:
+                active_columns.append(column)
+
+    axis_index_by_column = {column: index + 1 for index, column in enumerate(active_columns)}
+
+    for payload in traces_payload:
+        column = str(payload.get("column", ""))
+        axis_index = axis_index_by_column.get(column, 1)
+        yaxis_name = "y" if axis_index == 1 else f"y{axis_index}"
         x_values = [datetime.fromtimestamp(ts) for ts in payload["ts_values"]]  # type: ignore[index]
         figure.add_trace(
             go.Scatter(
                 x=x_values,
                 y=payload["y_values"],  # type: ignore[index]
-                mode="lines",
+                mode="lines+markers",
                 name=payload["name"],  # type: ignore[index]
-                line={"color": payload["color"], "width": 2},  # type: ignore[index]
+                line={
+                    "color": payload["color"],  # type: ignore[index]
+                    "width": 1.8,
+                    "simplify": False,
+                },
+                marker={"size": 9, "opacity": 0.001},
                 yaxis=yaxis_name,
-                hoverinfo="skip",
-                hovertemplate=None,
+                hovertemplate="%{x|%d.%m.%Y %H:%M:%S}<br>%{y:.6g}<extra></extra>",
             )
         )
 
     if show_y_axes:
-        left_extra = [idx for idx in range(1, len(traces_payload)) if idx % 2 == 0]
-        right_extra = [idx for idx in range(1, len(traces_payload)) if idx % 2 == 1]
+        axis_count = len(active_columns)
+        left_axes = [idx for idx in range(1, axis_count + 1) if idx % 2 == 1]
+        right_axes = [idx for idx in range(1, axis_count + 1) if idx % 2 == 0]
+        left_extra = left_axes[1:]
+        right_extra = right_axes
 
-        left_pad = min(0.08 + 0.055 * len(left_extra), 0.36)
-        right_pad = min(0.06 + 0.055 * len(right_extra), 0.36)
-        if left_pad + right_pad > 0.72:
-            scale = 0.72 / (left_pad + right_pad)
+        left_pad = min(0.045 + 0.016 * len(left_extra), 0.12)
+        right_pad = min(0.038 + 0.016 * len(right_extra), 0.12)
+        if left_pad + right_pad > 0.24:
+            scale = 0.24 / (left_pad + right_pad)
             left_pad *= scale
             right_pad *= scale
         x_domain = [left_pad, 1.0 - right_pad]
 
-        left_positions: dict[int, float] = {}
+        left_positions: dict[int, float] = {1: x_domain[0]}
         right_positions: dict[int, float] = {}
         for order, idx in enumerate(left_extra, start=1):
-            left_positions[idx] = max(0.0, x_domain[0] - 0.055 * order)
+            left_positions[idx] = max(0.0, x_domain[0] - 0.016 * order)
         for order, idx in enumerate(right_extra, start=1):
-            right_positions[idx] = min(1.0, x_domain[1] + 0.055 * order)
+            right_positions[idx] = min(1.0, x_domain[1] + 0.016 * order)
     else:
-        x_domain = [0.04, 0.995]
+        x_domain = [0.028, 0.997]
         left_positions = {}
         right_positions = {}
 
     layout_axes = {}
-    for index, payload in enumerate(traces_payload):
-        axis_key = "yaxis" if index == 0 else f"yaxis{index + 1}"
+    for axis_index, column in enumerate(active_columns, start=1):
+        axis_key = "yaxis" if axis_index == 1 else f"yaxis{axis_index}"
+        axis_color = SERIES_COLORS[(axis_index - 1) % len(SERIES_COLORS)]
+
+        fixed_range = FIXED_Y_RANGES.get(column)
+        if fixed_range is not None:
+            y_min, y_max = fixed_range
+        else:
+            mins = [float(trace["y_min"]) for trace in traces_payload if trace.get("column") == column]
+            maxs = [float(trace["y_max"]) for trace in traces_payload if trace.get("column") == column]
+            y_min, y_max = _normalized_numeric_range(min(mins), max(maxs))
+
         base_cfg = {
-            "range": [payload["y_min"], payload["y_max"]],  # type: ignore[index]
+            "range": [y_min, y_max],
             "zeroline": False,
+            "showline": True,
+            "linecolor": "#c8d4e2",
+            "linewidth": 1,
         }
         if show_y_axes:
+            channel_title = _strip_type_suffix(channel_label_map.get(column, column))
             base_cfg.update(
                 {
-                    "title": {"text": payload["name"], "font": {"color": payload["color"]}},  # type: ignore[index]
-                    "tickfont": {"color": payload["color"]},  # type: ignore[index]
+                    "title": {"text": channel_title, "font": {"color": axis_color, "size": 9}, "standoff": 2},
+                    "tickfont": {"color": axis_color, "size": 9},
+                    "ticks": "outside",
+                    "ticklen": 2,
+                    "tickwidth": 1,
+                    "nticks": 5,
                 }
             )
         else:
             base_cfg.update({"visible": False, "showgrid": False, "showticklabels": False})
 
-        if index == 0:
+        if axis_index == 1:
             base_cfg.update({"showgrid": show_y_axes})
         else:
-            side = "left" if index in left_positions else "right"
-            position = left_positions.get(index, right_positions.get(index, x_domain[1]))
+            side = "left" if axis_index in left_positions else "right"
+            position = left_positions.get(axis_index, right_positions.get(axis_index, x_domain[1]))
             base_cfg.update(
                 {
                     "showgrid": False,
@@ -443,9 +664,11 @@ def _build_plotly_figure(
 
     start_dt = datetime.fromtimestamp(start_ts)
     end_dt = datetime.fromtimestamp(end_ts)
+    initial_end_ts = min(end_ts, start_ts + INITIAL_X_WINDOW_SECONDS)
+    initial_end_dt = datetime.fromtimestamp(initial_end_ts)
     figure.update_layout(
         title=(
-            f"Каналы: {len(traces_payload)} | "
+            f"Файлов: {file_count} | Каналов: {len(active_columns)} | "
             f"{start_dt.strftime('%d.%m.%Y %H:%M:%S')} - "
             f"{end_dt.strftime('%d.%m.%Y %H:%M:%S')}"
         ),
@@ -453,15 +676,17 @@ def _build_plotly_figure(
             "title": {"text": "Время"},
             "type": "date",
             "domain": x_domain,
+            "range": [start_dt, initial_end_dt],
             "showgrid": True,
             "rangeslider": {"visible": False},
             "showspikes": False,
         },
-        hovermode=False,
-        hoverdistance=0,
-        spikedistance=0,
-        legend={"orientation": "h", "y": -0.2, "x": 0.0},
-        margin={"l": 45, "r": 45, "t": 70, "b": 100},
+        hovermode="closest",
+        clickmode="event+select",
+        hoverdistance=-1,
+        spikedistance=-1,
+        legend={"orientation": "h", "y": -0.2, "x": 0.0, "font": {"size": 9}},
+        margin={"l": 28, "r": 28, "t": 70, "b": 105},
         template="plotly_white",
         **layout_axes,
     )
@@ -489,17 +714,6 @@ app.layout = html.Div(
             className="left-panel",
             children=[
                 html.Div(
-                    className="panel-head",
-                    children=[
-                        html.H1("Построение графиков", className="app-title"),
-                        html.P(
-                            "Работа с SQLite-файлами в браузере. Все настройки слева, график справа.",
-                            className="subtitle",
-                        ),
-                        html.Span("Веб-интерфейс", className="pill"),
-                    ],
-                ),
-                html.Div(
                     className="panel-card",
                     children=[
                         dcc.Upload(
@@ -507,28 +721,15 @@ app.layout = html.Div(
                             className="upload-area",
                             children=html.Div(
                                 [
-                                    html.Span("Перетащите .db сюда или "),
-                                    html.Span("выберите файл", className="linkish"),
+                                    html.Span("Перетащите до 32 .db файлов сюда или "),
+                                    html.Span("выберите файлы", className="linkish"),
                                 ]
                             ),
-                            multiple=False,
+                            multiple=True,
                             accept=".db,.sqlite,.sqlite3,application/octet-stream",
                         ),
-                        html.Div("или откройте файл по пути", className="mini-label"),
-                        html.Div(
-                            className="row",
-                            children=[
-                                dcc.Input(
-                                    id="db-path-input",
-                                    type="text",
-                                    className="text-input grow",
-                                    placeholder="Например: C:\\data\\20250506_Canal#1.db",
-                                ),
-                                html.Button("Открыть", id="open-path-btn", className="ghost-btn"),
-                            ],
-                        ),
-                        html.Div("Файл не выбран", id="db-info", className="db-info"),
-                        html.Div("Диапазон: — | Каналов: —", id="meta-line", className="meta-line"),
+                        html.Div("Файлы не выбраны", id="db-info", className="db-info"),
+                        html.Div("Файлов: — | Диапазон: — | Каналов: —", id="meta-line", className="meta-line"),
                     ],
                 ),
                 html.Div("Параметры построения", className="section-title"),
@@ -557,7 +758,7 @@ app.layout = html.Div(
                     ],
                 ),
                 html.Button("Полный диапазон", id="full-range-btn", className="ghost-btn wide-btn"),
-                html.Label("Строк на канал", className="input-label"),
+                html.Label("Строк на канал (на файл)", className="input-label"),
                 dcc.Input(
                     id="limit-input",
                     type="number",
@@ -594,6 +795,8 @@ app.layout = html.Div(
                         html.Button("Построить все", id="build-all-btn", className="accent-btn secondary"),
                     ],
                 ),
+                html.Button("Сохранить график (PNG)", id="save-chart-btn", className="ghost-btn wide-btn"),
+                html.Div("Сохранение выполняется в загрузки браузера.", id="save-msg", className="hint"),
                 html.Div(
                     "Сохранение картинки: кнопка камеры на панели графика.",
                     className="hint",
@@ -616,7 +819,7 @@ app.layout = html.Div(
                     children=[
                         dcc.Graph(
                             id="main-chart",
-                            figure=_build_placeholder_figure("Откройте файл базы данных и постройте график."),
+                            figure=_build_placeholder_figure("Загрузите до 32 файлов базы данных и постройте график."),
                             config=_plotly_config(),
                             className="main-chart",
                         )
@@ -651,64 +854,72 @@ app.layout = html.Div(
     Output("day-dropdown", "options"),
     Output("day-dropdown", "value"),
     Input("db-upload", "contents"),
-    Input("open-path-btn", "n_clicks"),
     State("db-upload", "filename"),
-    State("db-path-input", "value"),
     State("db-store", "data"),
     prevent_initial_call=True,
 )
 def load_database(
-    contents: Optional[str],
-    _open_path_clicks: Optional[int],
-    filename: Optional[str],
-    path_input: Optional[str],
+    contents: Optional[Any],
+    filename: Optional[Any],
     db_store: Optional[dict[str, Any]],
 ):
-    previous_path = None
-    if isinstance(db_store, dict):
-        previous_path = db_store.get("db_path")
+    upload_contents = [str(item) for item in _as_list(contents) if isinstance(item, str) and item]
+    if not upload_contents:
+        raise PreventUpdate
 
-    temp_db_path: Optional[str] = None
-    db_path_to_use: Optional[str] = None
-    display_name: Optional[str] = None
+    upload_names = _as_list(filename)
+    was_limited = len(upload_contents) > MAX_UPLOAD_FILES
+    upload_contents = upload_contents[:MAX_UPLOAD_FILES]
+
+    previous_paths = _extract_temp_paths_from_store(db_store)
+    created_paths: list[str] = []
+    loaded_sources: list[dict[str, Any]] = []
+    merged_db_path: Optional[str] = None
+    skipped_count = 0
+
     try:
-        triggered = _current_triggered_id()
-        if triggered == "open-path-btn":
-            db_path_to_use = _validate_input_path(path_input or "")
-            display_name = db_path_to_use
-        else:
-            if not contents:
-                raise PreventUpdate
-            temp_db_path = _decode_upload_to_temp_db(contents)
-            db_path_to_use = temp_db_path
-            display_name = filename or Path(temp_db_path).name
+        for index, upload_content in enumerate(upload_contents):
+            temp_db_path: Optional[str] = None
+            try:
+                temp_db_path = _decode_upload_to_temp_db(upload_content)
+                created_paths.append(temp_db_path)
 
-        assert db_path_to_use is not None
-        service = SQLiteService(db_path_to_use)
+                raw_name = upload_names[index] if index < len(upload_names) else None
+                display_name = str(raw_name).strip() if isinstance(raw_name, str) and raw_name.strip() else ""
+                if not display_name:
+                    display_name = Path(temp_db_path).name
 
-        if not service.table_exists(DATA_TABLE):
-            raise ValueError(f"Таблица '{DATA_TABLE}' не найдена.")
+                source = _inspect_uploaded_source(temp_db_path, display_name)
+                loaded_sources.append(source)
+            except Exception:
+                skipped_count += 1
+                _cleanup_temp_db(temp_db_path)
+                if temp_db_path and temp_db_path in created_paths:
+                    created_paths.remove(temp_db_path)
 
-        columns = service.list_columns(DATA_TABLE)
-        column_names = {column.name for column in columns}
-        if TIME_COLUMN not in column_names:
-            raise ValueError(f"В таблице '{DATA_TABLE}' нет столбца '{TIME_COLUMN}'.")
+        if not loaded_sources:
+            raise ValueError("Не удалось загрузить ни одного корректного файла .db.")
 
-        available_channels = [(column, label) for column, label in Y_CHANNELS if column in column_names]
+        available_channels = _build_available_channels(loaded_sources)
         if not available_channels:
-            raise ValueError("В таблице не найдены поддерживаемые каналы Y.")
+            raise ValueError("В загруженных файлах нет общих поддерживаемых каналов Y.")
 
-        bounds = service.fetch_time_bounds(DATA_TABLE, TIME_COLUMN)
+        common_columns = [column for column, _ in available_channels]
+        merged_db_path, merged_rows = _merge_sources_into_temp_db(loaded_sources, common_columns)
+
+        merged_service = SQLiteService(merged_db_path)
+        bounds = merged_service.fetch_time_bounds(DATA_TABLE, TIME_COLUMN)
         if not bounds:
-            raise ValueError("Не удалось определить временной диапазон в таблице данных.")
-
+            raise ValueError("После объединения не найдено данных для построения графика.")
         min_ts, max_ts = bounds
-        try:
-            service.ensure_time_index(DATA_TABLE, TIME_COLUMN)
-        except sqlite3.Error:
-            pass
 
-        _cleanup_temp_db(previous_path)
+        for source_path in created_paths:
+            _cleanup_temp_db(source_path)
+        created_paths = []
+
+        for old_path in previous_paths:
+            if old_path != merged_db_path:
+                _cleanup_temp_db(old_path)
 
         options = [{"label": label, "value": column} for column, label in available_channels]
         default_selection = [available_channels[0][0]]
@@ -718,8 +929,11 @@ def load_database(
         day_default = day_options[0]["value"] if day_options else None
 
         payload = {
-            "db_path": db_path_to_use,
-            "filename": display_name or Path(db_path_to_use).name,
+            "db_path": merged_db_path,
+            "filename": f"Объединенная база ({len(loaded_sources)} файлов)",
+            "file_count": len(loaded_sources),
+            "merged_rows": merged_rows,
+            "source_names": [str(source.get("filename", "")) for source in loaded_sources],
             "min_ts": min_ts,
             "max_ts": max_ts,
             "channel_labels": {column: label for column, label in available_channels},
@@ -727,8 +941,16 @@ def load_database(
 
         return (
             payload,
-            f"Файл: {payload['filename']}",
-            _build_meta_line(min_ts=min_ts, max_ts=max_ts, channel_count=len(available_channels)),
+            (
+                _build_db_info_line(loaded_sources, skipped_count=skipped_count, was_limited=was_limited)
+                + f" | объединено строк: {merged_rows}"
+            ),
+            _build_meta_line(
+                min_ts=min_ts,
+                max_ts=max_ts,
+                channel_count=len(available_channels),
+                file_count=len(loaded_sources),
+            ),
             options,
             default_selection,
             start_value,
@@ -741,7 +963,9 @@ def load_database(
             day_default,
         )
     except Exception as error:
-        _cleanup_temp_db(temp_db_path)
+        for path in created_paths:
+            _cleanup_temp_db(path)
+        _cleanup_temp_db(merged_db_path)
         if isinstance(db_store, dict):
             return (
                 no_update,
@@ -761,7 +985,7 @@ def load_database(
         return (
             None,
             f"Ошибка загрузки: {error}",
-            "Диапазон: — | Каналов: —",
+            "Файлов: — | Диапазон: — | Каналов: —",
             [],
             [],
             None,
@@ -866,17 +1090,24 @@ def build_chart(
 ):
     if not isinstance(db_store, dict):
         return (
-            _build_placeholder_figure("Откройте файл базы данных и постройте график."),
+            _build_placeholder_figure("Загрузите до 32 файлов базы данных и постройте график."),
             [],
             "Ожидание загрузки базы данных.",
         )
 
     db_path = db_store.get("db_path")
-    if not db_path or not Path(db_path).exists():
+    if not isinstance(db_path, str) or not db_path:
         return (
-            _build_placeholder_figure("Файл базы данных не найден. Загрузите его повторно."),
+            _build_placeholder_figure("Базы данных не загружены."),
             [],
-            "Временный файл базы данных недоступен.",
+            "Нет доступных файлов базы данных.",
+        )
+
+    if not Path(db_path).exists():
+        return (
+            _build_placeholder_figure("Объединенная база недоступна. Загрузите файлы повторно."),
+            [],
+            "Временный файл объединенной базы недоступен.",
         )
 
     trigger = _current_triggered_id()
@@ -917,15 +1148,21 @@ def build_chart(
 
     label_map: dict[str, str] = dict(db_store.get("channel_labels") or _db_channel_labels())
     selected_channels = [(column, label_map.get(column, column)) for column in selected_columns]
+    downsample_target = _compute_downsample_target(
+        limit=limit,
+        source_count=1,
+        channel_count=len(selected_channels),
+    )
 
     try:
-        service = SQLiteService(str(db_path))
+        service = SQLiteService(db_path)
         traces_payload, points_total = _build_traces_payload(
             service=service,
             selected_channels=selected_channels,
             limit=limit,
             start_ts=start_ts,
             end_ts=end_ts,
+            downsample_target=downsample_target,
         )
     except sqlite3.Error as error:
         return (
@@ -950,11 +1187,22 @@ def build_chart(
     show_y_axes = "show" in (show_y_axes_values or [])
     figure = _build_plotly_figure(
         traces_payload=traces_payload,
+        selected_columns=selected_columns,
+        channel_label_map=label_map,
         start_ts=start_ts,
         end_ts=end_ts,
         show_y_axes=show_y_axes,
+        file_count=int(db_store.get("file_count") or 1),
     )
-    status = f"Построено каналов: {len(traces_payload)} | Точек: {points_total} | Лимит: {limit}"
+    status_parts = [
+        f"Файлов: {int(db_store.get('file_count') or 1)}",
+        f"Каналов: {len(selected_channels)}",
+        f"Трейсов: {len(traces_payload)}",
+        f"Точек: {points_total}",
+        f"Лимит строк: {limit}",
+        f"Точек/трейс: {downsample_target}",
+    ]
+    status = " | ".join(status_parts)
     return figure, traces_payload, status
 
 
@@ -972,14 +1220,9 @@ def update_clicked_values(
     if trigger == "traces-store" or not click_data or not traces_payload:
         return "Время X: —", []
 
-    points = click_data.get("points") or []
-    if not points:
-        return "Время X: —", []
-
-    x_raw = points[0].get("x")
-    x_ts = _parse_plotly_x_to_timestamp(str(x_raw))
+    x_ts = _extract_click_timestamp(click_data, traces_payload)
     if x_ts is None:
-        return f"Время X: не распознано ({x_raw})", []
+        return "Время X: не распознано", []
 
     clicked_time = datetime.fromtimestamp(x_ts).strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
     lines: list[html.Li] = []
@@ -1007,10 +1250,43 @@ def update_clicked_values(
     return f"Время X: {clicked_time}", lines
 
 
+app.clientside_callback(
+    """
+    function(n_clicks, figure) {
+        if (!n_clicks) {
+            return window.dash_clientside.no_update;
+        }
+        if (!figure || !figure.data || figure.data.length === 0) {
+            return "Нет графика для сохранения.";
+        }
+
+        const plotEl = document.querySelector("#main-chart .js-plotly-plot");
+        if (!plotEl || !window.Plotly) {
+            return "График еще не готов. Постройте график и повторите.";
+        }
+
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const fileName = "grafik-" + stamp;
+        window.Plotly.downloadImage(plotEl, {
+            format: "png",
+            filename: fileName,
+            scale: 2
+        });
+        return "Сохранено: " + fileName + ".png";
+    }
+    """,
+    Output("save-msg", "children"),
+    Input("save-chart-btn", "n_clicks"),
+    State("main-chart", "figure"),
+    prevent_initial_call=True,
+)
+
+
 def main() -> None:
     host = os.environ.get("DASH_HOST", "127.0.0.1")
     port = int(os.environ.get("DASH_PORT", "8050"))
-    open_browser = os.environ.get("DASH_OPEN_BROWSER", "0") == "1"
+    default_open = "1" if getattr(sys, "frozen", False) else "0"
+    open_browser = os.environ.get("DASH_OPEN_BROWSER", default_open) == "1"
     if open_browser:
         timer = Timer(1.0, _try_open_browser, args=(host, port))
         timer.daemon = True

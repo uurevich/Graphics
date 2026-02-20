@@ -34,9 +34,9 @@ body {
 }
 
 .left-panel {
-  width: 385px;
-  min-width: 335px;
-  max-height: calc(100vh - 28px);
+  width: clamp(440px, 31vw, 560px);
+  min-width: 460px;
+  height: calc(100vh - 28px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -60,40 +60,6 @@ body {
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.83);
   box-shadow: 0 20px 44px rgba(16, 35, 60, 0.13);
-}
-
-.panel-head {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.app-title {
-  margin: 0;
-  font-size: 31px;
-  line-height: 1.05;
-  letter-spacing: 0.2px;
-}
-
-.subtitle {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.35;
-}
-
-.pill {
-  align-self: flex-start;
-  margin-top: 4px;
-  border: 1px solid #bad8df;
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 11px;
-  color: #1e5b65;
-  background: #e9f6f8;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  font-weight: 700;
 }
 
 .panel-card {
@@ -140,12 +106,6 @@ body {
 
 .meta-line {
   color: #36506b;
-  font-weight: 600;
-}
-
-.mini-label {
-  color: #6b7b8f;
-  font-size: 12px;
   font-weight: 600;
 }
 
@@ -236,7 +196,9 @@ body {
 }
 
 .channels-checklist {
-  max-height: 240px;
+  min-height: 380px;
+  height: 44vh;
+  max-height: 54vh;
   overflow-y: auto;
   border: 1px solid #d5deea;
   border-radius: 10px;
@@ -322,6 +284,8 @@ body {
   padding-left: 18px;
   color: #1f3148;
   font-size: 14px;
+  max-height: 180px;
+  overflow-y: auto;
 }
 
 @media (max-width: 1240px) {

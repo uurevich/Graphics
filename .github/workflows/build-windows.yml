@@ -1,4 +1,4 @@
-name: Build Windows App
+name: Build Windows Web App
 
 on:
   workflow_dispatch:
@@ -27,11 +27,11 @@ jobs:
 
       - name: Build EXE
         run: |
-          pyinstaller --noconfirm --clean --windowed --onedir --name GraphicsApp --collect-data plotly --collect-submodules PySide6.QtWebEngineCore --collect-submodules PySide6.QtWebEngineWidgets --collect-submodules PySide6.QtWebChannel --collect-binaries PySide6 --collect-data PySide6 app/main.py
+          pyinstaller --noconfirm --clean --windowed --onedir --name GraphicsWebApp --add-data "assets;assets" --collect-all dash --collect-data plotly --collect-all flask --collect-all werkzeug --collect-all jinja2 app/web_app.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GraphicsApp-windows
-          path: dist/GraphicsApp
+          name: GraphicsWebApp-windows
+          path: dist/GraphicsWebApp
           if-no-files-found: error

@@ -9,5 +9,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo Готово: dist\GraphicsApp\GraphicsApp.exe
+echo Готово: dist\GraphicsWebApp\GraphicsWebApp.exe
 exit /b 0

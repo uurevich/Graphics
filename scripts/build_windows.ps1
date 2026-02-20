@@ -23,21 +23,24 @@ if (Test-Path "dist") {
 if (Test-Path "GraphicsApp.spec") {
     Remove-Item -Force "GraphicsApp.spec"
 }
+if (Test-Path "GraphicsWebApp.spec") {
+    Remove-Item -Force "GraphicsWebApp.spec"
+}
 
 & $pythonExe -m PyInstaller `
     --noconfirm `
     --clean `
     --windowed `
     --onedir `
-    --name "GraphicsApp" `
+    --name "GraphicsWebApp" `
+    --add-data "assets;assets" `
+    --collect-all dash `
     --collect-data plotly `
-    --collect-submodules PySide6.QtWebEngineCore `
-    --collect-submodules PySide6.QtWebEngineWidgets `
-    --collect-submodules PySide6.QtWebChannel `
-    --collect-binaries PySide6 `
-    --collect-data PySide6 `
-    "app/main.py"
+    --collect-all flask `
+    --collect-all werkzeug `
+    --collect-all jinja2 `
+    "app/web_app.py"
 
 Write-Host ""
 Write-Host "Сборка завершена."
-Write-Host "EXE: dist\GraphicsApp\GraphicsApp.exe"
+Write-Host "EXE: dist\GraphicsWebApp\GraphicsWebApp.exe"
