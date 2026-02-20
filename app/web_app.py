@@ -25,6 +25,8 @@ from app.data.sqlite_service import SQLiteService
 DATA_TABLE = "data"
 TIME_COLUMN = "time@timestamp"
 MAX_RENDER_POINTS_PER_CHANNEL = 3500
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ASSETS_DIR = PROJECT_ROOT / "assets"
 
 Y_CHANNELS = [
     ("data_format_0", "Объект мойки (INT16)"),
@@ -451,7 +453,12 @@ def _db_channel_labels() -> dict[str, str]:
     return {column: label for column, label in Y_CHANNELS}
 
 
-app = Dash(__name__, title="Построение графиков")
+app = Dash(
+    __name__,
+    title="Построение графиков",
+    assets_folder=str(ASSETS_DIR),
+    assets_url_path="/assets",
+)
 server = app.server
 
 app.layout = html.Div(
