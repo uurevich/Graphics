@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import plotly.graph_objects as go
 try:
-    from dash import Dash, Input, Output, State, callback, ctx, dcc, html, no_update
+    from dash import Dash, Input, Output, State, ctx, dcc, html, no_update
     from dash.exceptions import PreventUpdate
 except ImportError as error:  # pragma: no cover - runtime dependency guard
     raise SystemExit(
@@ -636,7 +636,7 @@ app.layout = html.Div(
 )
 
 
-@callback(
+@app.callback(
     Output("db-store", "data"),
     Output("db-info", "children"),
     Output("meta-line", "children"),
@@ -775,8 +775,8 @@ def load_database(
         )
 
 
-@callback(
-    Output("channels-checklist", "value"),
+@app.callback(
+    Output("channels-checklist", "value", allow_duplicate=True),
     Input("select-all-btn", "n_clicks"),
     Input("clear-btn", "n_clicks"),
     Input("build-all-btn", "n_clicks"),
@@ -801,9 +801,9 @@ def update_channel_selection(
     raise PreventUpdate
 
 
-@callback(
-    Output("start-dt", "value"),
-    Output("end-dt", "value"),
+@app.callback(
+    Output("start-dt", "value", allow_duplicate=True),
+    Output("end-dt", "value", allow_duplicate=True),
     Input("apply-day-btn", "n_clicks"),
     Input("full-range-btn", "n_clicks"),
     State("day-dropdown", "value"),
@@ -839,7 +839,7 @@ def apply_time_shortcuts(
     raise PreventUpdate
 
 
-@callback(
+@app.callback(
     Output("main-chart", "figure"),
     Output("traces-store", "data"),
     Output("status-line", "children"),
@@ -958,7 +958,7 @@ def build_chart(
     return figure, traces_payload, status
 
 
-@callback(
+@app.callback(
     Output("clicked-time", "children"),
     Output("clicked-values", "children"),
     Input("main-chart", "clickData"),
