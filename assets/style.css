@@ -1,0 +1,253 @@
+:root {
+  --bg-a: #f4efe5;
+  --bg-b: #dbe7f3;
+  --panel: #fefefe;
+  --panel-border: #d8dee9;
+  --text-main: #14213d;
+  --text-muted: #5f6b7a;
+  --accent: #0b7285;
+  --accent-strong: #095c6b;
+  --ghost-bg: #eef3f8;
+  --good: #0f7b6c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Avenir Next", "Trebuchet MS", "Verdana", sans-serif;
+  color: var(--text-main);
+  background:
+    radial-gradient(circle at 10% 10%, rgba(255, 255, 255, 0.65), transparent 28%),
+    linear-gradient(130deg, var(--bg-a), var(--bg-b));
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  gap: 14px;
+  padding: 14px;
+}
+
+.left-panel {
+  width: 360px;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  box-shadow: 0 20px 50px rgba(20, 33, 61, 0.15);
+  backdrop-filter: blur(4px);
+  overflow-y: auto;
+  max-height: calc(100vh - 28px);
+}
+
+.right-panel {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  box-shadow: 0 18px 45px rgba(20, 33, 61, 0.11);
+  padding: 10px;
+}
+
+.app-title {
+  margin: 0;
+  font-size: 31px;
+  line-height: 1.06;
+  letter-spacing: 0.3px;
+}
+
+.subtitle {
+  margin: 0 0 4px 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.upload-area {
+  padding: 14px;
+  text-align: center;
+  border: 1px dashed #93a7ba;
+  border-radius: 12px;
+  color: var(--text-main);
+  background: #f8fbff;
+  cursor: pointer;
+}
+
+.upload-area:hover {
+  border-color: var(--accent);
+  background: #edf7f9;
+}
+
+.linkish {
+  color: var(--accent);
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+.db-info {
+  background: #f4f7fb;
+  border: 1px solid #d8e0ea;
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.section-title {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: #44566f;
+  text-transform: uppercase;
+}
+
+.input-label {
+  font-size: 13px;
+  color: #3f4f66;
+  margin-bottom: -4px;
+}
+
+.text-input,
+.control-dropdown .Select-control,
+.control-dropdown .Select-placeholder,
+.control-dropdown .Select-value-label {
+  font-size: 14px;
+}
+
+.text-input,
+.control-dropdown .Select-control {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid #c7d2df;
+  padding: 10px 11px;
+  background: #ffffff;
+}
+
+.text-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(11, 114, 133, 0.15);
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+}
+
+.grow {
+  flex: 1;
+}
+
+.accent-btn,
+.ghost-btn {
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.accent-btn {
+  color: #ffffff;
+  background: linear-gradient(135deg, var(--accent), #188fa1);
+  box-shadow: 0 10px 22px rgba(11, 114, 133, 0.3);
+}
+
+.accent-btn:hover {
+  background: linear-gradient(135deg, var(--accent-strong), #0f7788);
+}
+
+.accent-btn.secondary {
+  background: linear-gradient(135deg, #7c6fc2, #5f61c4);
+  box-shadow: 0 10px 22px rgba(95, 97, 196, 0.3);
+}
+
+.ghost-btn {
+  color: #2c3e55;
+  background: var(--ghost-bg);
+  border: 1px solid #d4dde8;
+}
+
+.ghost-btn:hover {
+  background: #e3ebf4;
+}
+
+.wide-btn {
+  width: 100%;
+}
+
+.channels-checklist {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #d5deea;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #fbfdff;
+}
+
+.channels-checklist label,
+.single-check label {
+  display: block;
+  font-size: 14px;
+  margin: 6px 0;
+  color: #25364b;
+}
+
+.hint {
+  color: #5c6e83;
+  font-size: 12px;
+  background: #f7f8fb;
+  border: 1px solid #d9dfea;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.status-line {
+  min-height: 22px;
+  color: var(--good);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.clicked-time {
+  font-size: 13px;
+  color: #2f3f54;
+  font-weight: 600;
+}
+
+.clicked-values {
+  margin: 0;
+  padding-left: 18px;
+  color: #1f2f45;
+  font-size: 14px;
+}
+
+.main-chart {
+  height: calc(100vh - 50px);
+}
+
+@media (max-width: 1120px) {
+  .app-shell {
+    flex-direction: column;
+  }
+
+  .left-panel {
+    width: 100%;
+    max-height: none;
+  }
+
+  .main-chart {
+    height: 68vh;
+  }
+}

@@ -1,64 +1,66 @@
-# SQLite Chart Builder (PySide6 + Plotly)
+# SQLite Chart Builder
 
-Desktop app template for opening SQLite `.db` files and building charts from table data.
+Проект теперь поддерживает 2 интерфейса:
 
-## Features
+- `Web` (Dash + Plotly) - запуск в браузере, основной режим.
+- `Desktop` (PySide6 + Plotly) - существующий Qt-вариант.
 
-- Open SQLite database files (`.db`, `.sqlite`, `.sqlite3`)
-- Fixed X axis: `time@timestamp` (Unix seconds)
-- Time interval filter (`Start` / `End`)
-- Quick day selection (`Use day`) and full-range reset
-- Multi-channel selection for `data_format_0..data_format_7`
-- Single chart with all selected channels (different color per channel)
-- Separate Y-axis for each selected channel (individual scale and range)
-- Build selected channels or all channels at once
-- Export current chart to image (`.png`, `.jpg`, `.webp`, `.bmp`)
-- Left sidebar for all controls and actions
-- One large chart area on the right
-- Row limit control for chart data
-- Interactive controls from Plotly (zoom/pan via mouse + modebar) + `Reset zoom` button
+## Возможности веб-версии
 
-## Project structure
+- загрузка SQLite-файла (`.db`, `.sqlite`, `.sqlite3`) прямо в браузере;
+- ось `X` всегда `time@timestamp`;
+- выбор диапазона времени и выбор конкретного дня;
+- один график с несколькими каналами (разные цвета);
+- отдельная ось `Y` для каждого канала;
+- фиксированные диапазоны по каналам;
+- переключатель видимости осей `Y`;
+- кнопки `Построить выбранные` и `Построить все`;
+- сводка значений по клику на график (время `X` + значения каналов);
+- сохранение графика как картинки через кнопку камеры в панели Plotly.
 
-- `app/main.py` - application entry point
-- `app/ui/main_window.py` - main UI and chart rendering
-- `app/data/sqlite_service.py` - SQLite schema/data access
-
-## Quick start
+## Запуск веб-версии (рекомендуется)
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+python -m app.web_app
+```
+
+После запуска откройте:
+
+- `http://127.0.0.1:8050`
+
+Если хотите авто-открытие браузера:
+
+```bash
+DASH_OPEN_BROWSER=1 python -m app.web_app
+```
+
+Упрощенный запуск:
+
+- macOS/Linux: `scripts/run_web.sh`
+- Windows: `scripts\run_web.bat`
+
+## Запуск desktop-версии (Qt)
+
+```bash
 python -m app.main
 ```
 
-## Build Windows EXE (without Python installed on target PC)
+## Структура
 
-Build step must be run on Windows (or in Windows CI):
+- `app/web_app.py` - веб-приложение на Dash
+- `app/main.py` - desktop-вход (PySide6)
+- `app/ui/main_window.py` - desktop UI
+- `app/data/sqlite_service.py` - доступ к SQLite
+- `assets/style.css` - стили веб-интерфейса
+
+## Сборка Windows EXE (desktop-вариант)
+
+Сборка `.exe` относится к Qt-версии:
 
 ```powershell
 cd Graphics
 scripts\build_windows.bat
 ```
-
-Result:
-
-- `dist\GraphicsApp\GraphicsApp.exe`
-
-This `.exe` can run on Windows machines without preinstalled Python.
-
-Alternative (CI):
-
-- Use GitHub Actions workflow: `.github/workflows/build-windows.yml`
-- Run `Build Windows App` (manual `workflow_dispatch`) or push to `main`/`master`
-- Download artifact `GraphicsApp-windows` (contains `GraphicsApp.exe`)
-
-## Notes
-
-- The app expects table `data` with column `time@timestamp`.
-- X axis is shown as date/time labels based on Unix timestamps.
-- Plot rendering is implemented via Plotly inside Qt WebEngine.
-- If Plotly is missing, install dependencies again: `pip install -r requirements.txt`.
-# Graphics
-# Graphics
